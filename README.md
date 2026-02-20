@@ -47,6 +47,11 @@ Each folder in the `src/` directory contains the implementation for a specific c
 - 📝 [Contract on Sepolia](https://sepolia.etherscan.io/address/0xd68f1215e9f696DC47afDAc645Ca073447e9f85C)
 - 🚀 [Live Demo](https://dex-d5b7q57ci-rosariobs-projects.vercel.app/)
 
+### Challenge 5: Oracles
+**Objective:** Build a Whitelist, Staking and an Optimistic oracle
+- 🔗 [Challenge Details](https://speedrunethereum.com/challenge/oracles)
+- 📝 [Contract on Sepolia](https://sepolia.etherscan.io/address/0x8b2791BA100c2ad81587BE8337353f07dA20e2b0)
+- 🚀 [Live Demo](https://oracles-hxrmyx70q-rosariobs-projects.vercel.app)
 
 ## 📄 License
 

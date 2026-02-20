@@ -1,0 +1,601 @@
+// SPDX-License-Identifier: MIT
+pragma solidity >=0.8.0 <0.9.0;
+
+import { ORA } from "./OracleToken.sol";
+import { StatisticsUtils } from "../utils/StatisticsUtils.sol";
+
+contract StakingOracle {
+    using StatisticsUtils for uint256[];
+
+    /////////////////
+    /// Errors //////
+    /////////////////
+
+    error NodeNotRegistered();
+    error InsufficientStake();
+    error NodeAlreadyRegistered();
+    error NoRewardsAvailable();
+    error OnlyPastBucketsAllowed();
+    error NodeAlreadySlashed();
+    error AlreadyReportedInCurrentBucket();
+    error NotDeviated();
+    error WaitingPeriodNotOver();
+    error InvalidPrice();
+    error IndexOutOfBounds();
+    error NodeNotAtGivenIndex();
+    error TransferFailed();
+    error MedianNotRecorded();
+    error BucketMedianAlreadyRecorded();
+    error NodeDidNotReport();
+    error InsufficientAllowance(address user, uint256 requested, uint256 available);
+
+    //////////////////////
+    /// State Variables //
+    //////////////////////
+
+    ORA public oracleToken;
+
+    struct OracleNode {
+        uint256 stakedAmount;
+        uint256 lastReportedBucket;
+        uint256 reportCount;
+        uint256 claimedReportCount;
+        uint256 firstBucket; // block when node registered
+        bool active;
+    }
+
+    struct BlockBucket {
+        mapping(address => bool) slashedOffenses;
+        address[] reporters;
+        uint256[] prices;
+        uint256 medianPrice;
+    }
+
+    mapping(address => OracleNode) public nodes;
+    mapping(uint256 => BlockBucket) public blockBuckets; // one bucket per 24 blocks
+    address[] public nodeAddresses;
+
+    uint256 public constant MINIMUM_STAKE = 100 ether;
+    uint256 public constant BUCKET_WINDOW = 24; // 24 blocks
+    uint256 public constant SLASHER_REWARD_PERCENTAGE = 10;
+    uint256 public constant REWARD_PER_REPORT = 1 ether; // ORA Token reward per report
+    uint256 public constant INACTIVITY_PENALTY = 1 ether;
+    uint256 public constant MISREPORT_PENALTY = 100 ether;
+    uint256 public constant MAX_DEVIATION_BPS = 1000; // 10% default threshold
+    uint256 public constant WAITING_PERIOD = 2; // 2 buckets after last report before exit allowed
+
+    ////////////////
+    /// Events /////
+    ////////////////
+
+    event NodeRegistered(address indexed node, uint256 stakedAmount);
+    event PriceReported(address indexed node, uint256 price, uint256 bucketNumber);
+    event BucketMedianRecorded(uint256 indexed bucketNumber, uint256 medianPrice);
+    event NodeSlashed(address indexed node, uint256 amount);
+    event NodeRewarded(address indexed node, uint256 amount);
+    event StakeAdded(address indexed node, uint256 amount);
+    event NodeExited(address indexed node, uint256 amount);
+
+    ///////////////////
+    /// Modifiers /////
+    ///////////////////
+
+    /**
+     * @notice Modifier to restrict function access to registered oracle nodes
+     * @dev Checks if the sender has a registered node in the mapping
+     */
+    modifier onlyNode() {
+        if (nodes[msg.sender].active == false) {
+            revert NodeNotRegistered();
+        }
+        _;
+    }
+
+    ///////////////////
+    /// Constructor ///
+    ///////////////////
+
+    constructor(address oraTokenAddress) {
+        oracleToken = ORA(payable(oraTokenAddress));
+    }
+
+    ///////////////////
+    /// Functions /////
+    ///////////////////
+
+    /**
+     * @notice Registers a new oracle node with initial ORA token stake
+     * @dev Creates a new OracleNode struct and adds the sender to the nodeAddresses array.
+     *      Requires minimum stake amount and prevents duplicate registrations.
+     */
+    function registerNode(uint256 amount) public {
+        if (amount < MINIMUM_STAKE) {
+            revert InsufficientStake();
+        }
+
+        if (nodes[msg.sender].active) {
+            revert NodeAlreadyRegistered();
+        }
+
+        uint256 allowance = oracleToken.allowance(msg.sender, address(this));
+        if (allowance < amount) {
+            revert InsufficientAllowance(msg.sender, amount, allowance);
+        }
+
+        bool sent = oracleToken.transferFrom(msg.sender, address(this), amount);
+        if (!sent) {
+            revert TransferFailed();
+        }
+
+        nodes[msg.sender] = OracleNode({
+            stakedAmount: amount,
+            lastReportedBucket: 0,
+            reportCount: 0,
+            claimedReportCount: 0,
+            firstBucket: getCurrentBucketNumber(),
+            active: true
+        });
+
+        nodeAddresses.push(msg.sender);
+        emit NodeRegistered(msg.sender, amount);
+    }
+
+    /**
+     * @notice Updates the price reported by an oracle node (only registered nodes)
+     * @dev Updates the node's lastReportedBucket and price in that bucket. Requires sufficient stake.
+     *      Enforces that previous report's bucket must have its median recorded before allowing new report.
+     *      This creates a chain of finalized buckets, ensuring all past reports are accountable.
+     * @param price The new price value to report
+     */
+    function reportPrice(uint256 price) public onlyNode {
+        if (price == 0) {
+            revert InvalidPrice();
+        }
+        if (getEffectiveStake(msg.sender) < MINIMUM_STAKE) {
+            revert InsufficientStake();
+        }
+
+        OracleNode storage node = nodes[msg.sender];
+
+        uint256 currentBucket = getCurrentBucketNumber();
+        if (node.lastReportedBucket == currentBucket) {
+            revert AlreadyReportedInCurrentBucket();
+        }
+
+        // Store the node's report
+        BlockBucket storage bucket = blockBuckets[currentBucket];
+        bucket.reporters.push(msg.sender);
+        bucket.prices.push(price);
+
+        // Update node
+        node.lastReportedBucket = currentBucket;
+        node.reportCount++;
+
+        emit PriceReported(msg.sender, price, currentBucket);
+    }
+
+    /**
+     * @notice Allows a node (active or inactive) to claim earned ORA rewards.
+     * @dev Rewards are paid per report and can only be claimed once.
+     *
+     *      Reward logic:
+     *      - Each submitted report earns REWARD_PER_REPORT ORA
+     *      - Only reports that have NOT been claimed yet are rewarded
+     */
+    function claimReward() public {
+        OracleNode storage node = nodes[msg.sender];
+
+        // node.reportCount
+        // - Total number of reports ever submitted by the node
+        // - Incremented each time reportPrice() succeeds
+        // - Monotonically increasing (never decreases)
+
+        // node.claimedReportCount
+        // - Number of reports already rewarded
+        // - Acts as a "cursor" to prevent double-claiming
+        // - Updated only when rewards are claimed
+
+        // delta represents the number of NEW reports
+        // that have not yet been rewarded
+        uint256 delta = node.reportCount - node.claimedReportCount;
+
+        // Revert if there are no new reports to reward
+        if (delta == 0) {
+            revert NoRewardsAvailable();
+        }
+        // Effects first: update state before external interaction
+        // This prevents reentrancy and double-claiming
+        node.claimedReportCount = node.reportCount;
+
+        // Mint rewards proportional to the number of unclaimed reports
+        uint256 rewardAmount = delta * REWARD_PER_REPORT;
+        oracleToken.mint(msg.sender, rewardAmount);
+
+        emit NodeRewarded(msg.sender, rewardAmount);
+    }
+
+    /**
+     * @notice Allows a registered node to increase its ORA token stake
+     */
+    function addStake(uint256 amount) public onlyNode {
+        if (amount == 0) {
+            revert InsufficientStake();
+        }
+
+        uint256 allowance = oracleToken.allowance(msg.sender, address(this));
+        if (allowance < amount) {
+            revert InsufficientAllowance(msg.sender, amount, allowance);
+        }
+
+        bool sent = oracleToken.transferFrom(msg.sender, address(this), amount);
+        if (!sent) {
+            revert TransferFailed();
+        }
+
+        nodes[msg.sender].stakedAmount += amount;
+        emit StakeAdded(msg.sender, amount);
+    }
+
+    /**
+     * @notice Records the median price for a bucket once sufficient reports are available
+     * @dev Anyone who uses the oracle's price feed can call this function to record the median price for a bucket.
+     * @param bucketNumber The bucket number to finalize
+     */
+    function recordBucketMedian(uint256 bucketNumber) public {
+        uint256 currentBucket = getCurrentBucketNumber();
+        if (bucketNumber >= currentBucket) {
+            revert OnlyPastBucketsAllowed();
+        }
+
+        BlockBucket storage bucket = blockBuckets[bucketNumber];
+        if (bucket.medianPrice != 0) {
+            revert BucketMedianAlreadyRecorded();
+        }
+        uint256[] memory prices = bucket.prices;
+
+        // Calculate the median price
+        prices.sort();
+        uint256 medianPrice = prices.getMedian();
+
+        // Record the new median price
+        bucket.medianPrice = medianPrice;
+        emit BucketMedianRecorded(bucketNumber, medianPrice);
+    }
+
+    /**
+     * @notice Slash an oracle node that reported a price too far from the bucket median.
+     * @dev Permissionless enforcement:
+     * Anyone can call this function to prove a node misreported in a *past* bucket.
+     *
+     * Why indices are provided:
+     * - We avoid looping on-chain over arrays (gas + DoS risk as arrays grow).
+     * - The caller finds the correct indices off-chain and the contract verifies them in O(1).
+     *
+     * Slashing logic:
+     * - The node is penalized by up to `MISREPORT_PENALTY` taken from its staked amount.
+     * - A percentage of the penalty is paid to the caller (the slasher) as an incentive.
+     *
+     * Requirements:
+     * - Only past buckets can be slashed (not the current bucket).
+     * - The bucket must have a recorded median price.
+     * - The node can be slashed at most once per bucket.
+     * - The reported price must deviate *strictly more* than `MAX_DEVIATION_BPS`.
+     *
+     * @param nodeToSlash Address of the node to be slashed.
+     * @param bucketNumber Bucket in which the misreport happened.
+     * @param reportIndex Index proving `nodeToSlash` is at `bucket.reporters[reportIndex]`
+     *        and its price is at `bucket.prices[reportIndex]` (parallel arrays).
+     * @param nodeAddressesIndex Index proving `nodeToSlash` is at `nodeAddresses[nodeAddressesIndex]`
+     *        (used for efficient removal if stake becomes zero).
+     */
+    function slashNode(
+        address nodeToSlash,
+        uint256 bucketNumber,
+        uint256 reportIndex,
+        uint256 nodeAddressesIndex
+    ) public {
+        // Only active/registered nodes can be slashed.
+        if (!nodes[nodeToSlash].active) {
+            revert NodeNotRegistered();
+        }
+        // Slashing is only allowed for completed buckets (current bucket is still in progress).
+        if (bucketNumber == getCurrentBucketNumber()) {
+            revert OnlyPastBucketsAllowed();
+        }
+        BlockBucket storage bucket = blockBuckets[bucketNumber];
+
+        // The median must be recorded; otherwise deviation cannot be evaluated.
+        if (bucket.medianPrice == 0) {
+            revert MedianNotRecorded();
+        }
+        // Prevent double-slashing: one slash per node per bucket.
+        if (bucket.slashedOffenses[nodeToSlash]) {
+            revert NodeAlreadySlashed();
+        }
+        // Bounds-check the provided report index.
+        if (reportIndex >= bucket.reporters.length) {
+            revert IndexOutOfBounds();
+        }
+        // Verify the off-chain lookup:
+        // the caller claims `nodeToSlash` is at `bucket.reporters[reportIndex]`.
+        if (nodeToSlash != bucket.reporters[reportIndex]) {
+            revert NodeNotAtGivenIndex();
+        }
+        // Pull the reported price from the parallel `prices` array.
+        uint256 reportedPrice = bucket.prices[reportIndex];
+
+        // A zero value indicates this reporter did not submit a price for the bucket.
+        if (reportedPrice == 0) {
+            revert NodeDidNotReport();
+        }
+        // Core rule: reported price must deviate *strictly more* than the allowed threshold.
+        if (!_checkPriceDeviated(reportedPrice, bucket.medianPrice)) {
+            revert NotDeviated();
+        }
+        // Effects first: mark as slashed before any token interactions.
+        bucket.slashedOffenses[nodeToSlash] = true;
+
+        OracleNode storage node = nodes[nodeToSlash];
+
+        // Compute penalty: slash at most MISREPORT_PENALTY, but never more than the stake.
+        uint256 actualPenalty = MISREPORT_PENALTY > node.stakedAmount ? node.stakedAmount : MISREPORT_PENALTY;
+
+        // Apply the slash.
+        node.stakedAmount -= actualPenalty;
+
+        // If the node is fully drained, remove it from the active node set.
+        // `nodeAddressesIndex` is provided to avoid looping through `nodeAddresses` on-chain.
+        if (node.stakedAmount == 0) {
+            _removeNode(nodeToSlash, nodeAddressesIndex);
+            emit NodeExited(nodeToSlash, 0);
+        }
+
+        // Reward the slasher with a percentage of the penalty.
+        uint256 reward = (actualPenalty * SLASHER_REWARD_PERCENTAGE) / 100;
+
+        // Pay the slasher. If transfer fails, revert.
+        if (!oracleToken.transfer(msg.sender, reward)) {
+            revert TransferFailed();
+        }
+        // Emit event for UIs/indexers.
+        emit NodeSlashed(nodeToSlash, actualPenalty);
+    }
+
+    /**
+     * @notice Allows a registered node to exit the system and withdraw their stake
+     * @dev Removes the node from the system and sends the stake to the node.
+     *      Requires that the the initial waiting period has passed to ensure the
+     *      node has been slashed if it reported a bad price before allowing it to exit.
+     * @param index The index of the node to remove in nodeAddresses
+     */
+    function exitNode(uint256 index) public onlyNode {
+        OracleNode storage node = nodes[msg.sender];
+        if (node.lastReportedBucket + WAITING_PERIOD > getCurrentBucketNumber()) {
+            revert WaitingPeriodNotOver();
+        }
+        // Get effective stake before removing node (since getEffectiveStake returns 0 for inactive nodes)
+        uint256 stake = getEffectiveStake(msg.sender);
+        _removeNode(msg.sender, index);
+        // Withdraw the stake
+        nodes[msg.sender].stakedAmount = 0;
+        bool success = oracleToken.transfer(msg.sender, stake);
+        if (!success) {
+            revert TransferFailed();
+        }
+        emit NodeExited(msg.sender, stake);
+    }
+
+    ////////////////////////
+    /// View Functions /////
+    ////////////////////////
+
+    /**
+     * @notice Returns the current bucket number
+     * @dev Returns the current bucket number based on the block number
+     * @return The current bucket number
+     */
+    function getCurrentBucketNumber() public view returns (uint256) {
+        return (block.number / BUCKET_WINDOW) + 1;
+    }
+
+    /**
+     * @notice Returns the list of registered oracle node addresses
+     * @return Array of registered oracle node addresses
+     */
+    function getNodeAddresses() public view returns (address[] memory) {
+        return nodeAddresses;
+    }
+
+    /**
+     * @notice Returns the stored median price from the most recently completed bucket
+     * @dev Requires that the median for the bucket be recorded via recordBucketMedian
+     * @return The median price for the last finalized bucket
+     */
+    function getLatestPrice() public view returns (uint256) {
+        uint256 currentBucket = getCurrentBucketNumber();
+        BlockBucket storage bucket = blockBuckets[currentBucket - 1];
+        uint256 medianPrice = bucket.medianPrice;
+        if (medianPrice == 0) {
+            revert MedianNotRecorded();
+        }
+        return medianPrice;
+    }
+
+    /**
+     * @notice Returns the stored median price from a specified bucket
+     * @param bucketNumber The bucket number to read the median price from
+     * @return The median price stored for the bucket
+     */
+    function getPastPrice(uint256 bucketNumber) public view returns (uint256) {
+        BlockBucket storage bucket = blockBuckets[bucketNumber];
+        uint256 medianPrice = bucket.medianPrice;
+        if (medianPrice == 0) {
+            revert MedianNotRecorded();
+        }
+        return medianPrice;
+    }
+
+    /**
+     * @notice Returns the price and slashed status of a node at a given bucket
+     * @param nodeAddress The address of the node to get the data for
+     * @param bucketNumber The bucket number to get the data from
+     * @return price The price of the node at the specified bucket
+     * @return slashed The slashed status of the node at the specified bucket
+     */
+    function getSlashedStatus(
+        address nodeAddress,
+        uint256 bucketNumber
+    ) public view returns (uint256 price, bool slashed) {
+        BlockBucket storage bucket = blockBuckets[bucketNumber];
+        for (uint256 i = 0; i < bucket.reporters.length; i++) {
+            if (nodeAddress == bucket.reporters[i]) {
+                price = bucket.prices[i];
+                slashed = bucket.slashedOffenses[nodeAddress];
+            }
+        }
+    }
+
+    /**
+     * @notice Returns the node's stake after applying inactivity penalties.
+     * @dev Effective stake decreases when a node misses reports in completed buckets.
+     *
+     *      Rule:
+     *      effectiveStake = stakedAmount - (missedReports * INACTIVITY_PENALTY)
+     *      floored at 0 (never negative).
+     *
+     *      Important nuance:
+     *      - We count only FULLY COMPLETED buckets since registration.
+     *      - The CURRENT bucket is excluded because reports there are still "in-flight".
+     */
+    function getEffectiveStake(address nodeAddress) public view returns (uint256) {
+        OracleNode memory node = nodes[nodeAddress];
+
+        // Inactive nodes contribute nothing.
+        if (!node.active) return 0;
+
+        uint256 currentBucket = getCurrentBucketNumber();
+
+        // If the node registered in the current bucket, no bucket has fully completed yet.
+        // Therefore expectedReports = 0 and no penalties are possible.
+        if (currentBucket == node.firstBucket) return node.stakedAmount;
+
+        /**
+         * Expected reports:
+         * Each fully completed bucket since registration requires exactly 1 report.
+         * We exclude the current bucket.
+         *
+         * Example:
+         * - firstBucket = 5
+         * - currentBucket = 8
+         * Completed buckets are: (5→6), (6→7), (7→8) => 3 expected reports
+         */
+        uint256 expectedReports = currentBucket - node.firstBucket;
+
+        /**
+         * Actual completed reports:
+         * reportCount counts all reports ever made, including (possibly) a report made
+         * in the current bucket.
+         *
+         * But a report in the current bucket must NOT be counted as "completed",
+         * otherwise it would incorrectly reduce penalties for past buckets.
+         */
+        uint256 actualReportsCompleted = node.reportCount;
+
+        // If the last report was in the current bucket, subtract it from "completed" reports.
+        if (node.lastReportedBucket == currentBucket && actualReportsCompleted > 0) {
+            actualReportsCompleted -= 1;
+        }
+
+        // If the node has at least as many completed reports as expected, it's on track: no penalty.
+        if (actualReportsCompleted >= expectedReports) return node.stakedAmount;
+
+        /**
+         * Missed reports and penalty:
+         * missed = expectedReports - actualReportsCompleted
+         * penalty = missed * INACTIVITY_PENALTY
+         */
+        uint256 missed = expectedReports - actualReportsCompleted;
+        uint256 penalty = missed * INACTIVITY_PENALTY;
+
+        // Floor at zero: effective stake cannot go below 0.
+        if (penalty > node.stakedAmount) return 0;
+        return node.stakedAmount - penalty;
+    }
+
+    /**
+     * @notice Returns the addresses of nodes in a bucket whose reported price deviates beyond the threshold
+     * @param bucketNumber The bucket number to get the outliers from
+     * @return Array of node addresses considered outliers
+     */
+    function getOutlierNodes(uint256 bucketNumber) public view returns (address[] memory) {
+        BlockBucket storage bucket = blockBuckets[bucketNumber];
+        if (bucket.medianPrice == 0) {
+            revert MedianNotRecorded();
+        }
+        uint256 reportersLength = bucket.reporters.length;
+
+        address[] memory outliers = new address[](reportersLength);
+        uint256 outlierCount = 0;
+
+        for (uint256 i = 0; i < reportersLength; i++) {
+            address reporter = bucket.reporters[i];
+            if (bucket.slashedOffenses[reporter]) {
+                continue;
+            }
+            uint256 reportedPrice = bucket.prices[i];
+            if (reportedPrice == 0) {
+                continue;
+            }
+
+            if (_checkPriceDeviated(reportedPrice, bucket.medianPrice)) {
+                outliers[outlierCount] = reporter;
+                outlierCount++;
+            }
+        }
+
+        address[] memory trimmed = new address[](outlierCount);
+        for (uint256 j = 0; j < outlierCount; j++) {
+            trimmed[j] = outliers[j];
+        }
+        return trimmed;
+    }
+
+    //////////////////////////
+    /// Internal Functions ///
+    //////////////////////////
+
+    /**
+     * @notice Removes a node from the nodeAddresses array
+     * @param nodeAddress The address of the node to remove
+     * @param index The index of the node to remove
+     */
+    function _removeNode(address nodeAddress, uint256 index) internal {
+        uint256 nodeAddressesLength = nodeAddresses.length;
+        if (index >= nodeAddressesLength) {
+            revert IndexOutOfBounds();
+        }
+
+        if (nodeAddresses[index] != nodeAddress) {
+            revert NodeNotAtGivenIndex();
+        }
+
+        // Swap and pop
+        nodeAddresses[index] = nodeAddresses[nodeAddressesLength - 1];
+        nodeAddresses.pop();
+
+        nodes[nodeAddress].active = false;
+    }
+
+    /**
+     * @notice Checks if the price deviation is greater than the threshold
+     * @param reportedPrice The price reported by the node
+     * @param medianPrice The average price of the bucket
+     * @return True if the price deviation is greater than the threshold, false otherwise
+     */
+    function _checkPriceDeviated(uint256 reportedPrice, uint256 medianPrice) internal pure returns (bool) {
+        // abs(reportedPrice - medianPrice)
+        uint256 deviation = reportedPrice > medianPrice ? reportedPrice - medianPrice : medianPrice - reportedPrice;
+        uint256 deviationBps = (deviation * 10_000) / medianPrice;
+        return deviationBps > MAX_DEVIATION_BPS;
+    }
+}
