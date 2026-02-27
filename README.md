@@ -53,6 +53,13 @@ Each folder in the `src/` directory contains the implementation for a specific c
 - 📝 [Contract on Sepolia](https://sepolia.etherscan.io/address/0x8b2791BA100c2ad81587BE8337353f07dA20e2b0)
 - 🚀 [Live Demo](https://oracles-hxrmyx70q-rosariobs-projects.vercel.app)
 
+### Challenge 6: Over Collateralized Lending
+**Objective:** Build a lending and borrowing platform
+
+- 🔗 [Challenge Details](https://speedrunethereum.com/challenge/over-collateralized-lending)
+- 📝 [Contract on Sepolia](https://sepolia.etherscan.io/address/0x5F583dF41dE1408819c82481a5442d9a3bb3dA4f)
+- 🚀 [Live Demo](https://over-collateralized-lending-pp1xiqflx-rosariobs-projects.vercel.app/)
+
 ## 📄 License
 
 This project is open source and available for educational purposes.

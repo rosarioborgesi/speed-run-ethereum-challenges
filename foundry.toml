@@ -4,4 +4,17 @@ out = "out"
 libs = ["lib"]
 remappings = ["@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/"]
 
+[lint]
+exclude_lints = [
+  "unaliased-plain-import",
+  "screaming-snake-case-const",
+  "screaming-snake-case-immutable",
+  "mixed-case-variable",
+  "mixed-case-function",
+  "unwrapped-modifier-logic",
+  "unsafe-typecast",
+  "erc20-unchecked-transfer",
+  "asm-keccak256"
+]
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
