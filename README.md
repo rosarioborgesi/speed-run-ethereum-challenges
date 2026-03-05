@@ -62,7 +62,7 @@ Each folder in the `src/` directory contains the implementation for a specific c
 - 🚀 [Live Demo](https://over-collateralized-lending-pp1xiqflx-rosariobs-projects.vercel.app/)
 
 ### Challenge 7: Stablecoins
-**Objective** Build an overcollateralized stablecoin
+**Objective:** Build an overcollateralized stablecoin
 
 - 🔗 [Challenge Details](https://speedrunethereum.com/challenge/stablecoins)
 - 📝 [Contract on Sepolia](https://sepolia.etherscan.io/address/0x572ab479E93BC707FA04880154cec91499435edf)
