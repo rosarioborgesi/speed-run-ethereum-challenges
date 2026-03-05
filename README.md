@@ -49,6 +49,7 @@ Each folder in the `src/` directory contains the implementation for a specific c
 
 ### Challenge 5: Oracles
 **Objective:** Build a Whitelist, Staking and an Optimistic oracle
+
 - 🔗 [Challenge Details](https://speedrunethereum.com/challenge/oracles)
 - 📝 [Contract on Sepolia](https://sepolia.etherscan.io/address/0x8b2791BA100c2ad81587BE8337353f07dA20e2b0)
 - 🚀 [Live Demo](https://oracles-hxrmyx70q-rosariobs-projects.vercel.app)
@@ -59,6 +60,13 @@ Each folder in the `src/` directory contains the implementation for a specific c
 - 🔗 [Challenge Details](https://speedrunethereum.com/challenge/over-collateralized-lending)
 - 📝 [Contract on Sepolia](https://sepolia.etherscan.io/address/0x5F583dF41dE1408819c82481a5442d9a3bb3dA4f)
 - 🚀 [Live Demo](https://over-collateralized-lending-pp1xiqflx-rosariobs-projects.vercel.app/)
+
+### Challenge 7: Stablecoins
+**Objective** Build an overcollateralized stablecoin
+
+- 🔗 [Challenge Details](https://speedrunethereum.com/challenge/stablecoins)
+- 📝 [Contract on Sepolia](https://sepolia.etherscan.io/address/0x572ab479E93BC707FA04880154cec91499435edf)
+- 🚀 [Live Demo](https://stablecoins-ao2wam0bz-rosariobs-projects.vercel.app)
 
 ## 📄 License
 
