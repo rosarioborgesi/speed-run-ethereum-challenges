@@ -68,6 +68,13 @@ Each folder in the `src/` directory contains the implementation for a specific c
 - 📝 [Contract on Sepolia](https://sepolia.etherscan.io/address/0x572ab479E93BC707FA04880154cec91499435edf)
 - 🚀 [Live Demo](https://stablecoins-ao2wam0bz-rosariobs-projects.vercel.app)
 
+### Challenge 8: Prediction Markets
+**Objective:** Build a prediction market
+
+- 🔗 [Challenge Details](https://speedrunethereum.com/challenge/prediction-markets)
+- 📝 [Contract on Sepolia](https://sepolia.etherscan.io/address/0xCCcb8298Ae8dC4D38329Ea44790b0CAc69e6D67E)
+- 🚀 [Live Demo](https://prediction-market-hk4dbteer-rosariobs-projects.vercel.app/)
+
 ## 📄 License
 
 This project is open source and available for educational purposes.
