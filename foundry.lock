@@ -10,5 +10,14 @@
       "name": "v5.0.2",
       "rev": "dbb6104ce834628e473d2173bbc9d47f81a9eec3"
     }
+  },
+  "lib/poseidon-solidity": {
+    "tag": {
+      "name": "v0.0.5",
+      "rev": "8205c97ec4a35a9adb854b70b2c9ba92668d1304"
+    }
+  },
+  "lib/zk-kit.solidity": {
+    "rev": "a171c845ec7fdc50cdd1fe96c14c27d707cdfbed"
   }
 }
