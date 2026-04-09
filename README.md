@@ -148,5 +148,26 @@ In this challenge I implemented an anonymous on-chain voting protocol where only
 
 This project is open source and available for educational purposes.
 
+## 🌐 Connect with Me
+<p align="left">
+  <a href="https://x.com/rosarioborgesi">
+    <img src="https://img.shields.io/badge/twitter-000000?style=for-the-badge&logo=x&logoColor=white"/>
+  </a>
+  <a href="https://www.linkedin.com/in/rosarioborgesi/">
+    <img src="https://img.shields.io/badge/LinkedIn-0A66C2?style=for-the-badge&logo=linkedin&logoColor=white"/>
+  </a>
+  <a href="mailto:borgesiros@gmail.com">
+    <img src="https://img.shields.io/badge/Email-D14836?style=for-the-badge&logo=gmail&logoColor=white"/>
+  </a>
+  <a href="https://www.youtube.com/@rosarioborgesi">
+    <img src="https://img.shields.io/badge/YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white"/>
+  </a>
+  <a href="https://farcaster.xyz/rosarioborgesi">
+    <img src="https://img.shields.io/badge/Farcaster-855DCD?style=for-the-badge"/>
+  </a>
+  <a href="https://medium.com/@rosarioborgesi/">
+    <img src="https://img.shields.io/badge/Medium-000000?style=for-the-badge&logo=medium&logoColor=white"/>
+  </a>
+</p>
 
 
